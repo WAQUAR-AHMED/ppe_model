@@ -7,8 +7,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from src.models.ppe_local import ppe_detection
 
-from src.store_s3.ppe_store import upload_to_s3
-from src.database.ppe_query import insert_ppe_frame
+# from src.store_s3.ppe_store import upload_to_s3
+# from src.database.ppe_query import insert_ppe_frame
 from multiprocessing import Process, Queue
 
 from PIL import Image
@@ -128,20 +128,20 @@ def run_ppe_detection(client_id: str, video_url: str, camera_id: int, user_id: i
                 
 
                 # ------------------ STORE EVERY 20th FRAME -----------------
-                if frame_num % 20 == 0:
+                # if frame_num % 20 == 0:
 
-                    if annotated_frame is not None:
-                        # JSON COPY to avoid race condition
-                        safe_copy = json.loads(json.dumps(payload))
+                #     if annotated_frame is not None:
+                #         # JSON COPY to avoid race condition
+                #         safe_copy = json.loads(json.dumps(payload))
 
-                        try:
-                            store_queue.put_nowait(
-                                (frame_num, buffer, safe_copy)
-                            )
-                        except:
-                            logger.warning(
-                                f"[{client_id}] Storage queue full; frame {frame_num} dropped."
-                            )
+                #         try:
+                #             store_queue.put_nowait(
+                #                 (frame_num, buffer, safe_copy)
+                #             )
+                #         except:
+                #             logger.warning(
+                #                 f"[{client_id}] Storage queue full; frame {frame_num} dropped."
+                #             )
 
             else:
                 if ws:
