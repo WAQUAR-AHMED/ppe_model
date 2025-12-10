@@ -1,4 +1,3 @@
-
 name: Deploy to EC2 (Build on EC2)
 
 on:
@@ -17,27 +16,37 @@ jobs:
           username: ubuntu
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            echo "---- Setting AWS environment ----"
+            export AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            export AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            export AWS_DEFAULT_REGION=${{ secrets.AWS_REGION }}
+
             echo "---- Pulling latest code ----"
-            if [ ! -d ~/service ]; then
-              git clone https://github.com/yourname/yourrepo.git service
+
+            # Clone or update repo in ~/ppe_model
+            if [ ! -d ~/ppe_model ]; then
+              git clone https://github.com/uctconsulting12/ppe_model.git ~/ppe_model
             else
-              cd service
+              cd ~/ppe_model
               git pull origin main
             fi
 
             echo "---- Building Docker image ----"
-            cd ~/service
-            docker build -t myservice:latest .
+            cd ~/ppe_model
+            sudo docker build -t ppe_image .
 
             echo "---- Stopping old container ----"
-            docker stop myservice || true
-            docker rm myservice || true
+            sudo docker stop ppe_container || true
+            sudo docker rm ppe_container || true
 
-            echo "---- Running new container ----"
-            docker run -d \
+            echo "---- Running new container with AWS creds ----"
+            sudo docker run -d \
               --gpus all \
-              --name myservice \
-              -p 9000:9000 \
-              myservice:latest
+              --name ppe_container \
+              -p 8000:8000 \
+              -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+              -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+              -e AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
+              ppe_image
 
             echo "Deployment completed."
