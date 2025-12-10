@@ -51,4 +51,4 @@ jobs:
             -e AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
             ppe_image
 
-            echo "Deployment completed. with docker"
+            echo "Deployment completed. "
