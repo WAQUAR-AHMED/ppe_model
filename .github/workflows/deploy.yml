@@ -41,12 +41,14 @@ jobs:
 
             echo "---- Running new container with AWS creds ----"
             sudo docker run -d \
-              --gpus all \
-              --name ppe_container \
-              -p 8000:8000 \
-              -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
-              -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-              -e AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
-              ppe_image
+            --name ppe_container \
+            -p 8000:8000 \
+            --device=/dev/nvidia0 \
+            --device=/dev/nvidiactl \
+            --device=/dev/nvidia-uvm \
+            -e AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
+            -e AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
+            -e AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
+            ppe_image
 
             echo "Deployment completed. with docker"
