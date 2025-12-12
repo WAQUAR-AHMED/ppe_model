@@ -142,7 +142,7 @@ def predict_fn(input_data, model):
         source=input_data,
         conf=0.1,
         tracker="bytetrack.yaml",
-        batch=16,
+        batch=32,
         persist=True,
         stream=False,
         verbose=False,
