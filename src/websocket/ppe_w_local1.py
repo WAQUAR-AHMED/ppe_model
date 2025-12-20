@@ -13,7 +13,7 @@ from multiprocessing import Process, Queue
 
 from PIL import Image
 
-logger = logging.getLogger("queue_monitoring")
+logger = logging.getLogger("ppe_monitoring")
 logger.setLevel(logging.INFO)
 
 
