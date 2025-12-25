@@ -83,7 +83,7 @@ def run_ppe_detection(client_id: str, video_url: str, camera_id: int, user_id: i
 
         # Convert to RGB and PIL Image for YOLO input
         h, w = frame.shape[:2]
-        new_w = 480
+        new_w = 720
         new_h = int((new_w / w) * h)
         
         frame = cv2.resize(frame, (new_w, new_h))
