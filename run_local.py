@@ -26,8 +26,7 @@ MODEL_PATH  = os.path.join(PPE_CODE_DIR, "best.pt")
 
 # Make ppe_logic importable without any package magic
 sys.path.insert(0, PPE_CODE_DIR)
-#from ppe_logic import PPELogic  # noqa: E402  (imported after path fix)
-from ppe_logic_cooldown import PPELogic
+from ppe_logic import PPELogic  # noqa: E402  (imported after path fix)
 from ultralytics import YOLO   # noqa: E402
 
 # ── Device ────────────────────────────────────────────────────────────────────
@@ -150,3 +149,4 @@ def run(source, save=False):
 if __name__ == "__main__":
     args = parse_args()
     run(source=args.source, save=args.save)
+
