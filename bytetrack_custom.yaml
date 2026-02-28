@@ -1,0 +1,11 @@
+# Custom ByteTrack config — tuned to reduce ID switching
+# Based on ultralytics 8.4.17 bytetrack.yaml schema
+
+tracker_type: bytetrack
+
+track_high_thresh: 0.45   # raised (was 0.25) — only confident detections used for primary match
+track_low_thresh: 0.1     # same — used for recovering lost tracks with weak detections
+new_track_thresh: 0.5     # raised (was 0.25) — avoid spawning tracks from noisy detections
+track_buffer: 90          # raised (was 30) — keeps lost person alive for 3s at 30fps (occlusion tolerance)
+match_thresh: 0.65        # lowered (was 0.8) — stricter spatial overlap required before re-assigning ID
+fuse_score: True          # fuse detection confidence with IoU for more stable matching
