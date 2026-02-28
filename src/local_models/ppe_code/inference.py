@@ -1,77 +1,3 @@
-# # ---------- Config / Globals ----------
-# import os
-# import io
-# import json
-# import base64
-# import torch
-# from PIL import Image
-# from ultralytics import YOLO
-
-# FRAME_WARMUP_RUNS = 3
-# REQUIREMENTS_PATH = "/opt/ml/model/code/requirements.txt"
-# MODEL_ENV_NAME = os.environ.get("SAGEMAKER_MODEL_NAME", "ppe_model")
-
-# # Detect device once
-# DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# print(f"[INFO] Inference will run on: {DEVICE}")
-
-
-# def model_fn(model_dir):
-#     model_path = os.path.join(model_dir, "best.pt")
-#     if not os.path.exists(model_path):
-#         raise FileNotFoundError(f"Model weights not found at {model_path}")
-
-#     model = YOLO(model_path)
-#     model.to(DEVICE)
-#     model.eval()
-
-#     # Warmup on GPU
-#     if DEVICE.type == "cuda":
-#         for _ in range(FRAME_WARMUP_RUNS):
-#             dummy = torch.zeros((1, 3, 640, 640), dtype=torch.float32, device=DEVICE)
-#             _ = model(dummy, verbose=False, device=DEVICE)
-
-#     return model
-
-
-# # ---------- Input parser ----------
-# def input_fn(request_body, content_type="application/json"):
-#     if content_type != "application/json":
-#         raise ValueError(f"Unsupported content type: {content_type}")
-
-#     data = json.loads(request_body)
-#     if "image" not in data:
-#         raise ValueError("JSON must contain 'image' field with base64 string")
-
-#     image_bytes = base64.b64decode(data["image"])
-#     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-#     return image
-
-
-# # ---------- Prediction ----------
-# def predict_fn(input_data, model):
-#     # Force GPU device explicitly
-#     results = model.predict(input_data, verbose=False, imgsz=640, device=DEVICE)
-
-#     detections = []
-#     for box in results[0].boxes:
-#         detections.append({
-#             "class": int(box.cls),
-#             "confidence": float(box.conf),
-#             "bbox": box.xyxy.cpu().numpy().tolist(),  # keep full coords
-#         })
-#     return detections
-
-
-# # ---------- Output ----------
-# def output_fn(prediction, accept="application/json"):
-#     if accept != "application/json":
-#         raise ValueError(f"Unsupported response content type: {accept}")
-#     return json.dumps(prediction)
-
-
-
-
 import os
 import io
 import json
@@ -82,10 +8,15 @@ from PIL import Image
 from ultralytics import YOLO
 
 
-import sys, os
+import sys
 
 # # Add <project_root>/src to Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".."))
+TRACKER_CFG = os.path.join(PROJECT_ROOT, "bytetrack_custom.yaml")
+
 
 from .ppe_logic import PPELogic
 
@@ -141,7 +72,7 @@ def predict_fn(input_data, model):
     results = model.track(
         source=input_data,
         conf=0.1,
-        tracker="bytetrack.yaml",
+        tracker=TRACKER_CFG,
         batch=32,
         persist=True,
         stream=False,
