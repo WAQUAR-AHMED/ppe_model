@@ -1,12 +1,17 @@
 """
-run_local_v9.py - Local runner for best_new.pt with yolo11m-pose regions.
+run_local_v5.py - Local runner using a YOLO pose model for person/keypoints
+and a PPE detection model for equipment checks.
+
+Behavior:
+  - Pose estimation -> head/torso/feet regions.
+  - PPE detections are evaluated within those regions.
+  - Inference runs on every frame (no skipping).
 """
 
-import argparse
-import os
 import sys
+import os
+import argparse
 import time
-
 import cv2
 import torch
 from PIL import Image
@@ -15,24 +20,25 @@ from PIL import Image
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PPE_CODE_DIR = os.path.join(SCRIPT_DIR, "src", "local_models", "ppe_code")
 
-DEFAULT_MODEL_PATH = os.path.join(PPE_CODE_DIR, "best_new.pt")
-FALLBACK_MODEL_PATH = os.path.join(PPE_CODE_DIR, "best_m.pt")
+DEFAULT_MODEL_PATH = os.path.join(PPE_CODE_DIR, "best_m.pt")
+FALLBACK_MODEL_PATH = os.path.join(PPE_CODE_DIR, "bet_m.pt")
 DEFAULT_POSE_MODEL_PATH = os.path.join(PPE_CODE_DIR, "yolo11m-pose.pt")
 
 sys.path.insert(0, PPE_CODE_DIR)
-from pose_regions import propose_foot_region, propose_head_region, propose_torso_region  # noqa: E402
-from ppe_logic import PPELogicV9  # noqa: E402
+from ppe_logic_v5 import PPELogicV5  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Running on: {DEVICE}")
+
+PERSON_COLOR = (0, 165, 255)
 POSE_CONF_THRESH = 0.70
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="PPE Detection v9 - best_new.pt + yolo11m-pose"
+        description="PPE Detection v5 - pose-driven person regions with PPE checks"
     )
     parser.add_argument(
         "--source",
@@ -42,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL_PATH,
-        help=f"Path to PPE YOLO .pt model file (default: {DEFAULT_MODEL_PATH})",
+        help=f"Path to YOLO .pt model file (default: {DEFAULT_MODEL_PATH})",
     )
     parser.add_argument(
         "--pose-model",
@@ -53,30 +59,27 @@ def parse_args():
         "--required",
         default=None,
         help=(
-            "Comma-separated PPE list to enforce. "
-            "Example: --required 'helmet,mask,safety_vest,boots,glasses,glove'"
+            "Comma-separated list of PPE items to enforce. "
+            "Leave blank to enforce all PPE classes. "
+            "Example: --required 'helmet,vest,boots'"
         ),
     )
     parser.add_argument(
         "--conf",
         type=float,
         default=0.40,
-        help="PPE detection confidence threshold (default: 0.40)",
+        help="Detection confidence threshold for tracking (default: 0.40)",
+    )
+    parser.add_argument(
+        "--process-every-n",
+        type=int,
+        default=1,
+        help="Run YOLO inference on every Nth frame (default: 1)",
     )
     parser.add_argument(
         "--save",
         action="store_true",
-        help="Save output to annotated_output_v9.mp4",
-    )
-    parser.add_argument(
-        "--show-regions",
-        action="store_true",
-        help="Draw pose regions (head/torso/feet/hands) on output",
-    )
-    parser.add_argument(
-        "--hide-equipment-boxes",
-        action="store_true",
-        help="Hide PPE equipment bounding boxes and labels on output",
+        help="Save the displayed output to annotated_output_v5.mp4",
     )
     return parser.parse_args()
 
@@ -103,49 +106,52 @@ def _resolve_pose_model_path(model_path: str) -> str:
     )
 
 
-def load_model(model_path: str, required_ppe=None, show_regions=False, hide_equipment_boxes=False):
-    resolved_model_path = _resolve_model_path(model_path)
-    print(f"[INFO] Loading PPE model from: {resolved_model_path}")
+def _scale_gap_param(value: int, process_every_n: int) -> int:
+    return max(1, int(value) * max(1, int(process_every_n)))
 
+
+def load_model(model_path: str, process_every_n: int, required_ppe=None):
+    resolved_model_path = _resolve_model_path(model_path)
+
+    print(f"[INFO] Loading model from: {resolved_model_path}")
     model = YOLO(resolved_model_path)
     model.to(DEVICE)
+
     print(f"[INFO] Model class names: {model.names}")
 
-    model.ppe_logic = PPELogicV9(
+    model.ppe_logic = PPELogicV5(
         model_class_names=model.names,
         required_ppe=required_ppe,
-        show_regions=show_regions,
-        show_equipment_boxes=not hide_equipment_boxes,
-        show_missing_annotations=False,
         class_conf_thresholds={
             "person": 0.50,
             "helmet": 0.55,
-            "mask": 0.15,
-            "safety_vest": 0.50,
+            "vest": 0.50,
             "boots": 0.45,
-            "glasses": 0.35,
-            "glove": 0.65,
         },
-        grace_frames=90,
-        confirm_frames=5,
-        resolve_frames=3,
-        state_ttl_frames=120,
+        grace_frames=_scale_gap_param(90, process_every_n),
+        confirm_frames=_scale_gap_param(5, process_every_n),
+        resolve_frames=_scale_gap_param(3, process_every_n),
+        state_ttl_frames=_scale_gap_param(120, process_every_n),
         emit_violation_updates=True,
         alert_cooldown_seconds=900,
-        equipment_hold_frames=900,
-        reid_max_gap_frames=30,
+        equipment_hold_frames=_scale_gap_param(900, process_every_n),
+        reid_max_gap_frames=_scale_gap_param(30, process_every_n),
         reid_min_iou=0.20,
-        reid_max_center_distance=60.0,
+        reid_max_center_distance=60.0 * max(1, int(process_every_n)),
         overlap_threshold=0.0,
     )
 
-    enforced = [model.names[cid] for cid in sorted(model.ppe_logic.required_ppe_ids)]
+    enforced = [
+        model.names[cid]
+        for cid in sorted(model.ppe_logic.required_ppe_ids)
+    ]
     print(
         f"[INFO] Person class ID  : {model.ppe_logic.person_class_id} "
         f"({model.names[model.ppe_logic.person_class_id]})"
     )
     print(f"[INFO] Enforced PPE     : {enforced}")
-    print("[INFO] PPE model loaded successfully.")
+    print(f"[INFO] Process every N : {process_every_n}")
+    print("[INFO] Model loaded successfully.")
     return model
 
 
@@ -172,35 +178,9 @@ def _bbox_from_points(points, pad=8):
     return (x1, y1, x2, y2)
 
 
-def _merge_boxes(boxes):
-    valid = [box for box in boxes if box is not None]
-    if not valid:
-        return None
-    x1 = min(box[0] for box in valid)
-    y1 = min(box[1] for box in valid)
-    x2 = max(box[2] for box in valid)
-    y2 = max(box[3] for box in valid)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return (int(x1), int(y1), int(x2), int(y2))
-
-
-def _clip_box_to_bbox(box, bounds):
-    if box is None:
-        return None
-    x1, y1, x2, y2 = box
-    bx1, by1, bx2, by2 = bounds
-    x1 = max(bx1, x1)
-    y1 = max(by1, y1)
-    x2 = min(bx2, x2)
-    y2 = min(by2, y2)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return (int(x1), int(y1), int(x2), int(y2))
-
-
 def _build_pose_regions(pose_result):
     persons = []
+
     if pose_result.keypoints is None or pose_result.boxes is None:
         return persons
 
@@ -226,47 +206,183 @@ def _build_pose_regions(pose_result):
                 return None
             return (x, y)
 
-        person_bbox = (x1, y1, x2, y2)
-        head_box = propose_head_region(kp_xy, kp_cf, person_bbox, conf_threshold=0.2)
-        torso_box = propose_torso_region(kp_xy, kp_cf, person_bbox, conf_threshold=0.2)
-        feet_box = propose_foot_region(kp_xy, kp_cf, person_bbox, conf_threshold=0.2)
+        # COCO-17 indices
+        head_pts = [p for p in [
+            _pt(0), _pt(1), _pt(2), _pt(3), _pt(4)
+        ] if p is not None]
+        torso_pts = [p for p in [
+            _pt(5), _pt(6), _pt(11), _pt(12)
+        ] if p is not None]
+        feet_pts = [p for p in [
+            _pt(15), _pt(16)
+        ] if p is not None]
 
-        left_hand_pts = [p for p in [_pt(7), _pt(9)] if p is not None]
-        right_hand_pts = [p for p in [_pt(8), _pt(10)] if p is not None]
-        left_hand_box = _bbox_from_points(left_hand_pts, pad=20) if left_hand_pts else None
-        right_hand_box = _bbox_from_points(right_hand_pts, pad=20) if right_hand_pts else None
-        left_hand_box = _clip_box_to_bbox(left_hand_box, person_bbox)
-        right_hand_box = _clip_box_to_bbox(right_hand_box, person_bbox)
-        hands_box = _merge_boxes([left_hand_box, right_hand_box])
-        hands_box = _clip_box_to_bbox(hands_box, person_bbox)
+        head_box = _bbox_from_points(head_pts, pad=12) if head_pts else None
+        if head_box is not None:
+            hx1, hy1, hx2, hy2 = head_box
+            # Extend head region to the top of the person bbox
+            head_box = (hx1, y1, hx2, hy2)
+        torso_box = _bbox_from_points(torso_pts, pad=14) if torso_pts else None
+        feet_box = _bbox_from_points(feet_pts, pad=10) if feet_pts else None
 
         persons.append({
             "raw_pid": raw_pid,
-            "bbox": person_bbox,
+            "bbox": (x1, y1, x2, y2),
             "conf": conf,
             "regions": {
                 "head": head_box,
                 "torso": torso_box,
                 "feet": feet_box,
-                "hands": hands_box,
             },
         })
 
     return persons
 
 
-def run(source, model_path, pose_model_path, conf_thresh, save=False, required_ppe=None, show_regions=False, hide_equipment_boxes=False):
-    model = load_model(
-        model_path,
-        required_ppe=required_ppe,
-        show_regions=show_regions,
-        hide_equipment_boxes=hide_equipment_boxes,
+class SkipFrameTracker:
+    def __init__(self, ppe_logic, frame_w: int, frame_h: int):
+        self.ppe_logic = ppe_logic
+        self.frame_w = frame_w
+        self.frame_h = frame_h
+        self.track_memory = {}
+
+    def update_from_inference(self, detections, frame_num: int):
+        seen_ids = set()
+        for det in detections:
+            sid = int(det["person_id"])
+            bbox = [int(v) for v in det["bbox"]]
+            prev = self.track_memory.get(sid)
+            velocity = [0, 0, 0, 0]
+
+            if prev is not None:
+                gap = max(1, frame_num - prev["frame_num"])
+                velocity = [
+                    (bbox[idx] - prev["bbox"][idx]) / float(gap)
+                    for idx in range(4)
+                ]
+
+            self.track_memory[sid] = {
+                "bbox": bbox,
+                "velocity": velocity,
+                "frame_num": frame_num,
+                "ppe_status": dict(det.get("ppe_status", {})),
+            }
+            seen_ids.add(sid)
+
+        stale_ids = [
+            sid for sid, memory in self.track_memory.items()
+            if frame_num - memory["frame_num"] > self.ppe_logic.state_ttl_frames
+        ]
+        for sid in stale_ids:
+            self.track_memory.pop(sid, None)
+
+    def predict_to_frame(self, frame_num: int):
+        predicted = []
+        for sid, memory in list(self.track_memory.items()):
+            steps = frame_num - memory["frame_num"]
+            if steps <= 0:
+                predicted.append((sid, list(memory["bbox"]), memory))
+                continue
+
+            bbox = []
+            for idx, value in enumerate(memory["bbox"]):
+                projected = int(round(value + memory["velocity"][idx] * steps))
+                bbox.append(projected)
+
+            bbox[0] = max(0, min(self.frame_w - 1, bbox[0]))
+            bbox[2] = max(0, min(self.frame_w - 1, bbox[2]))
+            bbox[1] = max(0, min(self.frame_h - 1, bbox[1]))
+            bbox[3] = max(0, min(self.frame_h - 1, bbox[3]))
+
+            if bbox[2] <= bbox[0]:
+                bbox[2] = min(self.frame_w - 1, bbox[0] + 1)
+            if bbox[3] <= bbox[1]:
+                bbox[3] = min(self.frame_h - 1, bbox[1] + 1)
+
+            predicted.append((sid, bbox, memory))
+        return predicted
+
+    def sync_logic_state(self, frame_num: int):
+        for sid, bbox, memory in self.predict_to_frame(frame_num):
+            self.ppe_logic.stable_tracks[sid] = {
+                "bbox": tuple(bbox),
+                "last_seen_frame": frame_num,
+            }
+            if sid in self.ppe_logic.person_states:
+                self.ppe_logic.person_states[sid]["last_seen_frame"] = frame_num
+
+            memory["bbox"] = bbox
+            memory["frame_num"] = frame_num
+
+    def render_predicted(self, frame, frame_num: int):
+        output = frame.copy()
+        for sid, bbox, memory in self.predict_to_frame(frame_num):
+            x1, y1, x2, y2 = bbox
+            cv2.rectangle(output, (x1, y1), (x2, y2), PERSON_COLOR, 2)
+            cv2.putText(
+                output,
+                f"SID:{sid} PRED",
+                (x1, max(20, y1 - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                PERSON_COLOR,
+                2,
+            )
+            summary = " ".join(
+                f"{name[:3].upper()}:{'yes' if status == 'yes' else ('NA' if status == 'na' else 'No')}"
+                for name, status in memory.get("ppe_status", {}).items()
+            )
+            if summary:
+                cv2.putText(
+                    output,
+                    summary,
+                    (x1, min(self.frame_h - 10, y2 + 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    2,
+                )
+        return output
+
+
+def _draw_timestamp(frame, frame_num: int, infer_ran: bool):
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    mode = "INFER" if infer_ran else "SKIP"
+    cv2.putText(
+        frame,
+        f"{ts} | Frame {frame_num} | {mode}",
+        (10, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 255, 0) if infer_ran else (0, 255, 255),
+        2,
     )
+    return frame
+
+
+def run(
+    source,
+    model_path,
+    pose_model_path,
+    conf_thresh,
+    process_every_n=1,
+    skip_frame_mode="raw",
+    save=False,
+    required_ppe=None,
+):
+    if process_every_n < 1:
+        raise ValueError("--process-every-n must be >= 1")
+
+    # Force no frame skipping for v5.
+    process_every_n = 1
+
+    model = load_model(model_path, process_every_n=process_every_n, required_ppe=required_ppe)
     pose_model = load_pose_model(pose_model_path)
     ppe_logic = model.ppe_logic
 
     cap_source = int(source) if source.isdigit() else source
     cap = cv2.VideoCapture(cap_source)
+
     if not cap.isOpened():
         raise RuntimeError(f"[ERROR] Could not open video source: {source}")
 
@@ -279,14 +395,13 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
 
     writer = None
     if save:
-        out_path = os.path.join(SCRIPT_DIR, "annotated_output_v9.mp4")
+        out_path = os.path.join(SCRIPT_DIR, "annotated_output_v5.mp4")
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(out_path, fourcc, fps, (frame_w, frame_h))
         print(f"[INFO] Saving output to: {out_path}")
 
     frame_counter = 0
-    prev_ts = time.perf_counter()
-    fps_ema = 0.0
+    inferred_frames = 0
     print("[INFO] Starting inference... Press 'q' to quit.")
 
     while True:
@@ -296,6 +411,7 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
             break
 
         frame_counter += 1
+        inferred_frames += 1
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(frame_rgb)
 
@@ -308,6 +424,7 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
             verbose=False,
             device=DEVICE,
         )
+
         persons = _build_pose_regions(pose_results[0])
 
         ppe_items = []
@@ -334,6 +451,7 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
                 verbose=False,
                 device=DEVICE,
             )
+
             if not ppe_results:
                 continue
 
@@ -343,29 +461,14 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
                 if cls_id not in ppe_logic.ppe_class_map:
                     continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                ppe_items.append((
-                    cls_id,
-                    (int(x1 + px1), int(y1 + py1), int(x2 + px1), int(y2 + py1)),
-                    conf,
-                ))
+                fx1 = int(x1 + px1)
+                fy1 = int(y1 + py1)
+                fx2 = int(x2 + px1)
+                fy2 = int(y2 + py1)
+                ppe_items.append((cls_id, (fx1, fy1, fx2, fy2), conf))
 
         output_frame, detections, alerts = ppe_logic.process_frame_pose_items(
             frame, ppe_items, model.names, persons, frame_num=frame_counter
-        )
-
-        now_ts = time.perf_counter()
-        dt = max(1e-6, now_ts - prev_ts)
-        instant_fps = 1.0 / dt
-        fps_ema = instant_fps if fps_ema <= 0.0 else (0.9 * fps_ema + 0.1 * instant_fps)
-        prev_ts = now_ts
-        cv2.putText(
-            output_frame,
-            f"FPS: {fps_ema:.1f}",
-            (10, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
         )
 
         if alerts:
@@ -376,7 +479,8 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
                     f"| Status: {alert['status']} | Missing: {missing_items}"
                 )
 
-        cv2.imshow("PPE Detection v9 - press Q to quit", output_frame)
+        output_frame = _draw_timestamp(output_frame, frame_counter, True)
+        cv2.imshow("PPE Detection v5 - press Q to quit", output_frame)
 
         if writer is not None:
             writer.write(output_frame)
@@ -389,7 +493,10 @@ def run(source, model_path, pose_model_path, conf_thresh, save=False, required_p
     if writer:
         writer.release()
     cv2.destroyAllWindows()
-    print(f"[INFO] Done. Processed {frame_counter} frames.")
+    print(
+        f"[INFO] Done. Processed {frame_counter} frames, "
+        f"ran inference on {inferred_frames} frames."
+    )
 
 
 if __name__ == "__main__":
@@ -405,8 +512,8 @@ if __name__ == "__main__":
         model_path=args.model,
         pose_model_path=args.pose_model,
         conf_thresh=args.conf,
+        process_every_n=args.process_every_n,
+        skip_frame_mode="raw",
         save=args.save,
         required_ppe=required_ppe,
-        show_regions=args.show_regions,
-        hide_equipment_boxes=args.hide_equipment_boxes,
     )
